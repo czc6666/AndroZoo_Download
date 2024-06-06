@@ -1,3 +1,5 @@
+import AndroZoo_Download_function
+
 debug = True
 configs = {
     'start_year': 2014,
