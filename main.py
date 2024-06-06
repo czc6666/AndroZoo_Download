@@ -1,5 +1,6 @@
 import AndroZoo_Download_function
 
+apikey = '输入你的api'
 debug = True
 configs = {
     'start_year': 2014,
