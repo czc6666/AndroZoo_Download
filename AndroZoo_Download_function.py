@@ -7,6 +7,8 @@ import time
 from tqdm import tqdm
 import gc
 
+debug = True
+
 def czc_read_csv(path, chunksize=100000, parse_dates=['dex_date']):
     starttime = time.perf_counter()
     chunks = []
