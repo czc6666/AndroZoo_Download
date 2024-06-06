@@ -52,8 +52,6 @@ def generate_download_link(filtered_df, out_dir, split_size=1000000):
         links_file = os.path.join(links_dir_name, f'links_{i // split_size + 1}.txt')
         with open(links_file, 'w') as f:
             for sha_value in chunk_df['sha256']:
-                apikey = '58b1fe025f2e5ab21ebb282515415dea1eeb28985d9083c0a397e7eda08ea8f8'  # czc api
-                # apikey = '77aec76df8b564d8b46de4b1ec775764188dcee2c768510a559bd535c88f5cc9'  # zky api
                 link = f"https://androzoo.uni.lu/api/download?apikey={apikey}&sha256={sha_value}\n"
                 f.write(link)
     del filtered_df  # 删除filtered_df释放内存
