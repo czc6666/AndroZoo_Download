@@ -42,7 +42,7 @@ def filter_apk(config, output_dir, csv_path='latest.csv', random_selection=False
     gc.collect()  # 强制进行垃圾回收
     return filtered_df
 
-def generate_download_link(filtered_df, out_dir, split_size=1000000):
+def generate_download_link(filtered_df, out_dir, split_size=1000000, apikey='none'):
     # 创建下载链接目录
     links_dir_name = os.path.join(out_dir, 'links')
     os.makedirs(links_dir_name, exist_ok=True)
