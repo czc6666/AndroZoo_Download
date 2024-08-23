@@ -6,111 +6,197 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from tqdm import tqdm
 import gc
+import random
 
 debug = True
 
+
+# 读取 CSV 文件并按块处理
 def czc_read_csv(path, chunksize=100000, parse_dates=['dex_date']):
+    debug_print(f'开始读取 CSV 文件：{path}')
     starttime = time.perf_counter()
     chunks = []
+    # 使用 pandas 的 chunk 机制逐块读取大文件
     for chunk in tqdm(pd.read_csv(path, parse_dates=parse_dates, chunksize=chunksize)):
         chunks.append(chunk)
+    # 合并所有块到一个 DataFrame
     df = pd.concat(chunks, ignore_index=True)
     endtime = time.perf_counter()
-    print('读取完毕，用时：', endtime - starttime)
+    debug_print(f'CSV 文件读取完毕，用时：{endtime - starttime}')
     return df
 
-def filter_apk(config, output_dir, csv_path='latest.csv', random_selection=False, random_sample_size=0):
+
+# 筛选符合条件的 APK 并生成包含 SHA256 值的 TXT 文件
+def czc_filter_apk(config, output_dir, csv_path='latest.csv'):
+    debug_print('开始筛选 APK')
     start_year_filter = config['start_year']
     end_year_filter = config['end_year']
     dex_size_limit = config['dex_size_limit']
     apk_size_limit = config['apk_size_limit']
-    print('文件读取中')
+
+    debug_print('文件读取中')
+    # 读取 CSV 文件
     df = czc_read_csv(csv_path, parse_dates=['dex_date'])
     df.set_index('dex_date', inplace=True)
+
     # 筛选数据
-    print('筛选 APK 中')
+    debug_print('筛选 APK 中')
     filtered_df = df.loc[(df.index.year >= start_year_filter) & (df.index.year <= end_year_filter) &
                          (df['vt_detection'] == 0) & (df['dex_size'] < dex_size_limit) &
                          (df['apk_size'] < apk_size_limit)]
-    # 随机抽样
-    if random_selection:
-        if random_sample_size < len(filtered_df):
-            # 仅当随机抽样量小于数据总量时才进行抽样
-            filtered_df = filtered_df.sample(n=random_sample_size)
-    filtered_df.to_csv(os.path.join(output_dir, 'filtered_apks.csv'), index=False)
-    del df  # 删除df释放内存
+    sha256_list = filtered_df['sha256'].tolist()
+
+    # 生成文件名，包含筛选条件
+    filtered_conditions = f"start_year_{start_year_filter}_end_year_{end_year_filter}_dex_size_{dex_size_limit}_apk_size_{apk_size_limit}"
+    filtered_file = os.path.join(output_dir, f'筛选后apk_{filtered_conditions}.txt')
+    debug_print('apk筛选完成')
+
+    # 保存筛选结果的 SHA256 值到文件
+    debug_print('保存 SHA256 到文件')
+    with open(filtered_file, 'w') as f:
+        for sha in sha256_list:
+            f.write(sha + '\n')
+    debug_print('apk筛选导出到txt完成')
+
+    del df  # 删除 df 释放内存
     gc.collect()  # 强制进行垃圾回收
-    return filtered_df
+    debug_print('垃圾回收完成')
 
-def generate_download_link(filtered_df, out_dir, split_size=1000000, apikey='none'):
-    # 创建下载链接目录
-    links_dir_name = os.path.join(out_dir, 'links')
-    os.makedirs(links_dir_name, exist_ok=True)
-    # 拆分下载链接并保存到多个TXT文件
-    print('链接生成中')
-    num_rows = filtered_df.shape[0]
-    for i in range(0, num_rows, split_size):
-        chunk_df = filtered_df.iloc[i:i + split_size]
-        links_file = os.path.join(links_dir_name, f'links_{i // split_size + 1}.txt')
-        with open(links_file, 'w') as f:
-            for sha_value in chunk_df['sha256']:
-                link = f"https://androzoo.uni.lu/api/download?apikey={apikey}&sha256={sha_value}\n"
-                f.write(link)
-    del filtered_df  # 删除filtered_df释放内存
-    gc.collect()  # 强制进行垃圾回收
-    return links_dir_name
+    return filtered_file
 
-def download_apk(url, download_path, pbar):
-    try:
-        while 1:
-            response = requests.get(url, verify=True)
-            if response.status_code == 200:
-                apk_name = url.split('=')[-1] + '.apk'
-                with open(os.path.join(download_path, apk_name), 'wb') as file:
-                    file.write(response.content)
-                pbar.set_postfix_str(f'已下载: {apk_name}')
-                pbar.update(1)
-                break
-            time.sleep(1)
-    except Exception as e:
-        pbar.set_postfix_str(f'下载错误: {url}: {e}')
-        pbar.update(1)
 
-def download_apk_multithreaded(links_dir, output_dir, num_threads=200):
+# 下载 APK 并记录已下载的文件
+def czc_download_apk(apikey, filtered_file, output_dir, target_count=10000):
+    debug_print('开始下载 APK')
+    filtered_conditions = os.path.splitext(os.path.basename(filtered_file))[0]
+    downloaded_file = os.path.join(output_dir, f'已下载apk_{filtered_conditions}.txt')
+
+    if not os.path.exists(downloaded_file):
+        open(downloaded_file, 'w').close()
+
+    with open(filtered_file, 'r') as f:
+        sha256_list = f.readlines()
+
+    with open(downloaded_file, 'r') as f:
+        downloaded_list = f.readlines()
+
+    sha256_list = [sha.strip() for sha in sha256_list]
+    downloaded_list = [sha.strip() for sha in downloaded_list]
+
+    to_download = list(set(sha256_list) - set(downloaded_list))
+    random.shuffle(to_download)
+
     download_dir = os.path.join(output_dir, 'apks')
     os.makedirs(download_dir, exist_ok=True)
-    all_download_links = []
-    for txt_file in os.listdir(links_dir):
-        with open(os.path.join(links_dir, txt_file), 'r') as file:
-            download_links = file.readlines()
-            all_download_links.extend([link.strip() for link in download_links])
-    with tqdm(total=len(all_download_links), desc='下载进度') as pbar:
+    debug_print(f'下载目录已创建：{download_dir}')
+
+    with tqdm(total=target_count, desc='下载进度') as pbar:
+        while len(downloaded_list) < target_count and to_download:
+            sha256 = to_download.pop()
+            url = f"https://androzoo.uni.lu/api/download?apikey={apikey}&sha256={sha256}"
+            debug_print(f'尝试下载 APK：{sha256}')
+            try:
+                response = requests.get(url, verify=True, timeout=10)
+                if response.status_code == 200:
+                    apk_name = sha256 + '.apk'
+                    with open(os.path.join(download_dir, apk_name), 'wb') as file:
+                        file.write(response.content)
+                    downloaded_list.append(sha256)
+                    with open(downloaded_file, 'a') as f:
+                        f.write(sha256 + '\n')
+                    pbar.update(1)
+                    debug_print(f'下载成功：{sha256}')
+                else:
+                    debug_print(f'下载失败：{sha256}, 状态码：{response.status_code}')
+            except Exception as e:
+                debug_print(f'下载错误：{sha256}，错误信息：{e}')
+
+
+# 多线程下载 APK 文件
+def czc_download_apk_multithreaded(apikey, filtered_file, output_dir, target_count=10000, num_threads=200):
+    debug_print('开始多线程下载 APK')
+    filtered_conditions = os.path.splitext(os.path.basename(filtered_file))[0]
+    downloaded_file = os.path.join(output_dir, f'已下载apk_{filtered_conditions}.txt')
+
+    if not os.path.exists(downloaded_file):
+        open(downloaded_file, 'w').close()
+
+    with open(filtered_file, 'r') as f:
+        sha256_list = f.readlines()
+
+    with open(downloaded_file, 'r') as f:
+        downloaded_list = f.readlines()
+
+    sha256_list = [sha.strip() for sha in sha256_list]
+    downloaded_list = [sha.strip() for sha in downloaded_list]
+
+    to_download = list(set(sha256_list) - set(downloaded_list))
+    random.shuffle(to_download)
+
+    download_dir = os.path.join(output_dir, 'apks')
+    os.makedirs(download_dir, exist_ok=True)
+    debug_print(f'下载目录已创建：{download_dir}')
+
+    def download_task(sha256, pbar):
+        url = f"https://androzoo.uni.lu/api/download?apikey={apikey}&sha256={sha256}"
+        debug_print(f'尝试下载 APK：{sha256}')
+        try:
+            response = requests.get(url, verify=True, timeout=10)
+            if response.status_code == 200:
+                apk_name = sha256 + '.apk'
+                with open(os.path.join(download_dir, apk_name), 'wb') as file:
+                    file.write(response.content)
+                with open(downloaded_file, 'a') as f:
+                    f.write(sha256 + '\n')
+                pbar.update(1)
+                debug_print(f'下载成功：{sha256}')
+            else:
+                debug_print(f'下载失败：{sha256}, 状态码：{response.status_code}')
+        except Exception as e:
+            debug_print(f'下载错误：{sha256}，错误信息：{e}')
+
+    with tqdm(total=target_count, desc='下载进度') as pbar:
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(download_apk, link, download_dir, pbar) for link in all_download_links]
+            futures = []
+            while len(downloaded_list) < target_count and to_download:
+                sha256 = to_download.pop()
+                future = executor.submit(download_task, sha256, pbar)
+                futures.append(future)
+                downloaded_list.append(sha256)
             for future in futures:
                 future.result()
-
-def re_download(output_dir, num_threads=1):
-    links_dir = os.path.join(output_dir, 'links')
-    apks_dir = os.path.join(output_dir, 'apks')
-    all_links = []
-    for txt_file in os.listdir(links_dir):
-        with open(os.path.join(links_dir, txt_file), 'r') as file:
-            download_links = file.readlines()
-            all_links += [link.strip()[-64:] for link in download_links]
-    all_apks = [apk[:-4] for apk in os.listdir(apks_dir)]
-    failed_apk_downloads = list(set(all_links).difference(set(all_apks)))
-    failed_apk_downloads_df = pd.DataFrame({'sha256': failed_apk_downloads})
-    print(f'共 {len(failed_apk_downloads)} 个 APK 下载失败')
-    re_download_dir = os.path.join(output_dir, datetime.now().strftime("%Y_%m_%d_%H_%M_redownload"))
-    os.makedirs(re_download_dir, exist_ok=True)
-    print('重新生成下载链接')
-    re_download_links_dir = generate_download_link(failed_apk_downloads_df, out_dir=re_download_dir)
-    print('开始重新下载')
-    download_apk_multithreaded(re_download_links_dir, re_download_dir, num_threads=num_threads)
-
-def debug_print(a):
-    if debug: print(a)
+    debug_print('多线程下载完成')
 
 
+# 调试打印
+def debug_print(message):
+    if debug:
+        print(message)
 
+
+# 生成下载目录
+def 生成下载目录(download_dir):
+    output_subdir = datetime.now().strftime("%Y%m%d") + '_' + '_'.join([str(configs[c]) for c in configs])
+    output_dir = os.path.join(download_dir, output_subdir)
+    debug_print(f'生成下载目录名字：{output_dir}')
+
+    os.makedirs(output_dir, exist_ok=True)
+    debug_print('创建下载目录完成')
+
+    return output_dir
+
+
+if __name__ == '__main__':
+    apikey = '58b1fe025f2e5ab21ebb282515415dea1eeb28985d9083c0a397e7eda08ea8f8'
+    configs = {
+        'start_year': 2014,
+        'end_year': 2014,
+        'dex_size_limit': 500 * 1024,
+        'apk_size_limit': 1024 * 1024 * 1024
+    }
+
+    output_dir = 生成下载目录(download_dir='')  # 指定下载路径，例如 'D:/downloads'，如果留空则为当前目录
+
+    filtered_file = czc_filter_apk(configs, output_dir)
+
+    czc_download_apk_multithreaded(apikey, filtered_file, output_dir, target_count=10000, num_threads=200)
