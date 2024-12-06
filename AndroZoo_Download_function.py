@@ -16,14 +16,18 @@ def czc_read_csv(path, chunksize=100000, parse_dates=['dex_date']):
     debug_print(f'开始读取 CSV 文件：{path}')
     starttime = time.perf_counter()
     chunks = []
-    # 使用 pandas 的 chunk 机制逐块读取大文件
-    for chunk in tqdm(pd.read_csv(path, parse_dates=parse_dates, chunksize=chunksize)):
-        chunks.append(chunk)
-    # 合并所有块到一个 DataFrame
-    df = pd.concat(chunks, ignore_index=True)
-    endtime = time.perf_counter()
-    debug_print(f'CSV 文件读取完毕，用时：{endtime - starttime}')
-    return df
+    try:
+        # 使用 pandas 的 chunk 机制逐块读取大文件
+        for chunk in tqdm(pd.read_csv(path, parse_dates=parse_dates, chunksize=chunksize)):
+            chunks.append(chunk)
+        # 合并所有块到一个 DataFrame
+        df = pd.concat(chunks, ignore_index=True)
+        endtime = time.perf_counter()
+        debug_print(f'CSV 文件读取完毕，用时：{endtime - starttime:.2f}秒')
+        return df
+    except Exception as e:
+        debug_print(f'读取 CSV 文件失败：{e}')
+        return None
 
 
 # 筛选符合条件的 APK 并生成包含 SHA256 值的 TXT 文件
@@ -35,28 +39,31 @@ def czc_filter_apk(config, output_dir, csv_path='latest.csv'):
     apk_size_limit = config['apk_size_limit']
 
     debug_print('文件读取中')
-    # 读取 CSV 文件
     df = czc_read_csv(csv_path, parse_dates=['dex_date'])
-    df.set_index('dex_date', inplace=True)
+    if df is None:
+        return None
 
-    # 筛选数据
     debug_print('筛选 APK 中')
-    filtered_df = df.loc[(df.index.year >= start_year_filter) & (df.index.year <= end_year_filter) &
-                         (df['vt_detection'] == 0) & (df['dex_size'] < dex_size_limit) &
-                         (df['apk_size'] < apk_size_limit)]
+    filtered_df = df.loc[(df['dex_date'].dt.year >= start_year_filter) & 
+                        (df['dex_date'].dt.year <= end_year_filter) &
+                        (df['vt_detection'] == 0) & 
+                        (df['dex_size'] < dex_size_limit) &
+                        (df['apk_size'] < apk_size_limit)]
     sha256_list = filtered_df['sha256'].tolist()
 
-    # 生成文件名，包含筛选条件
     filtered_conditions = f"start_year_{start_year_filter}_end_year_{end_year_filter}_dex_size_{dex_size_limit}_apk_size_{apk_size_limit}"
     filtered_file = os.path.join(output_dir, f'筛选后apk_{filtered_conditions}.txt')
     debug_print('apk筛选完成')
 
-    # 保存筛选结果的 SHA256 值到文件
     debug_print('保存 SHA256 到文件')
-    with open(filtered_file, 'w') as f:
-        for sha in sha256_list:
-            f.write(sha + '\n')
-    debug_print('apk筛选导出到txt完成')
+    try:
+        with open(filtered_file, 'w') as f:
+            for sha in sha256_list:
+                f.write(sha + '\n')
+        debug_print('apk筛选导出到txt完成')
+    except Exception as e:
+        debug_print(f'保存 SHA256 到文件失败：{e}')
+        return None
 
     del df  # 删除 df 释放内存
     gc.collect()  # 强制进行垃圾回收
@@ -171,7 +178,7 @@ def czc_download_apk_multithreaded(apikey, filtered_file, output_dir, target_cou
 # 调试打印
 def debug_print(message):
     if debug:
-        print(message)
+        print('🤪' , message)
 
 
 # 生成下载目录
@@ -187,16 +194,22 @@ def 生成下载目录(download_dir):
 
 
 if __name__ == '__main__':
-    apikey = '58b1fe025f2e5ab21ebb282515415dea1eeb28985d9083c0a397e7eda08ea8f8'
+    apikey = '这写key'
+    csv_path = 'latest.csv'
+    download_dir= ''
+    num_threads = 200
+    下载apk数 = 20000
     configs = {
-        'start_year': 2014,
-        'end_year': 2014,
-        'dex_size_limit': 500 * 1024,
-        'apk_size_limit': 1024 * 1024 * 1024
+        'start_year': 2017,
+        'end_year': 2018,
+        'dex_size_limit': 512 * 1024,
+        'apk_size_limit': 512 * 1024 * 1024
     }
 
-    output_dir = 生成下载目录(download_dir='')  # 指定下载路径，例如 'D:/downloads'，如果留空则为当前目录
+    output_dir = 生成下载目录(download_dir)  # 指定下载路径，例如 'D:/downloads'，如果留空则为当前目录
 
-    filtered_file = czc_filter_apk(configs, output_dir)
-
-    czc_download_apk_multithreaded(apikey, filtered_file, output_dir, target_count=10000, num_threads=200)
+    filtered_file = czc_filter_apk(configs, output_dir, csv_path)
+    if filtered_file:
+        czc_download_apk_multithreaded(apikey, filtered_file, output_dir, 下载apk数, num_threads)
+    else:
+        debug_print('筛选 APK 失败，无法进行下载')
